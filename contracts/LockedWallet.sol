@@ -9,12 +9,14 @@ contract LockedWallet {
         uint256 amount;
         uint256 unlockTime;
         uint256 depositTime;
+        bool withdrawn;
     }
 
-    Deposit[] public deposits;
+    mapping(uint256 => Deposit) public deposits;
+    uint256[] public depositIndexes;
 
-    event NewDeposit(address indexed from, uint256 amount, uint256 unlockTime);
-    event Withdrawal(address indexed to, uint256 amount, uint256 reward);
+    event NewDeposit(address indexed from, uint256 indexed depositId, uint256 amount, uint256 unlockTime);
+    event Withdrawal(address indexed to, uint256 indexed depositId, uint256 amount, uint256 reward);
 
     constructor() {
         owner = msg.sender;
@@ -29,49 +31,66 @@ contract LockedWallet {
         require(msg.value > 0, "Deposit amount must be greater than 0");
         require(_unlockTime > block.timestamp, "Unlock time must be in the future");
         
-        deposits.push(Deposit({
+        uint256 depositId = depositIndexes.length;
+        deposits[depositId] = Deposit({
             amount: msg.value,
             unlockTime: _unlockTime,
-            depositTime: block.timestamp
-        }));
+            depositTime: block.timestamp,
+            withdrawn: false
+        });
+        depositIndexes.push(depositId);
 
-        emit NewDeposit(msg.sender, msg.value, _unlockTime);
+        emit NewDeposit(msg.sender, depositId, msg.value, _unlockTime);
     }
 
-    function withdraw(uint256 _index) external onlyOwner {
-        require(_index < deposits.length, "Invalid deposit index");
-        Deposit storage dep = deposits[_index];
+    function withdraw(uint256 _depositId) external onlyOwner {
+        require(_depositId < depositIndexes.length, "Invalid deposit ID");
+        Deposit storage dep = deposits[_depositId];
+        require(!dep.withdrawn, "Deposit already withdrawn");
         require(block.timestamp >= dep.unlockTime, "Funds are still locked");
 
-        uint256 reward = calculateReward(_index);
+        uint256 reward = calculateReward(_depositId);
         uint256 totalAmount = dep.amount + reward;
         
-        // Remove the deposit before transferring to prevent reentrancy
-        deposits[_index] = deposits[deposits.length - 1];
-        deposits.pop();
+        // Mark as withdrawn before transferring to prevent reentrancy
+        dep.withdrawn = true;
         
         (bool success, ) = payable(owner).call{value: totalAmount}("");
         require(success, "Transfer failed");
         
-        emit Withdrawal(owner, dep.amount, reward);
+        emit Withdrawal(owner, _depositId, dep.amount, reward);
     }
 
-    function calculateReward(uint256 _index) public view returns (uint256) {
-        Deposit storage dep = deposits[_index];
+    function calculateReward(uint256 _depositId) public view returns (uint256) {
+        Deposit storage dep = deposits[_depositId];
+        require(!dep.withdrawn, "Deposit already withdrawn");
         uint256 lockDuration = block.timestamp - dep.depositTime;
         return (dep.amount * REWARD_RATE * lockDuration) / (365 days * 100);
     }
 
     function getTotalBalance() external view returns (uint256) {
         uint256 total = 0;
-        for (uint256 i = 0; i < deposits.length; i++) {
-            total += deposits[i].amount + calculateReward(i);
+        for (uint256 i = 0; i < depositIndexes.length; i++) {
+            Deposit storage dep = deposits[depositIndexes[i]];
+            if (!dep.withdrawn) {
+                total += dep.amount + calculateReward(depositIndexes[i]);
+            }
         }
         return total;
     }
 
     function getDepositsCount() external view returns (uint256) {
-        return deposits.length;
+        return depositIndexes.length;
+    }
+
+    function getActiveDepositsCount() external view returns (uint256) {
+        uint256 count = 0;
+        for (uint256 i = 0; i < depositIndexes.length; i++) {
+            if (!deposits[depositIndexes[i]].withdrawn) {
+                count++;
+            }
+        }
+        return count;
     }
 }
 
